@@ -1,0 +1,100 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: sssd-security-hook-tls
+  namespace: default
+spec:
+  dnsNames:
+  - 'sssd-security-hook.cluster.local'
+  - 'sssd-security-hook.default.svc.cluster.local'
+  - 'sssd-security-hook'
+  - 'sssd-security-hook.default.svc'
+  issuerRef:
+    kind: ClusterIssuer
+    name: ca-issuer-k8s-senia-org
+  secretName: sssd-security-hook-tls
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sssd-security-hook
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sssd-security-hook
+  template:
+    metadata:
+      labels:
+        app: sssd-security-hook
+        app.kubernetes.io/component: webhook
+        app.kubernetes.io/instance: sssd-security-hook
+        app.kubernetes.io/name: webhook
+    spec:
+      containers:
+      - name: sssd-security-hook
+        image: registry.devops.senia.org/k8s/images/sssd_security_webhook:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 443
+        volumeMounts:
+        - name: sssd-security-hook-cert
+          mountPath: "/etc/webhook/certs"
+          readOnly: true
+        env:
+        - name: TARGET_NAMESPACES
+          value: "gss1,gss2,gss3,gss4"
+      volumes:
+      - name: sssd-security-hook-cert
+        secret:
+          secretName: sssd-security-hook-tls
+      imagePullSecrets:
+      - name: registry-devops-senia
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: sssd-security-hook.default.svc
+  annotations:
+    cert-manager.io/inject-ca-from: default/sssd-security-hook-tls
+webhooks:
+  - name: sssd-security-hook.default.svc
+    clientConfig:
+      service:
+        name: sssd-security-hook
+        namespace: default
+        path: "/mutate"
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        scope: "Namespaced"
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values:
+            - gss1
+            - gss2
+            - gss3
+            - gss4
+    admissionReviewVersions: ["v1","v1beta1"]
+    sideEffects: None
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sssd-security-hook
+spec:
+  selector:
+    app.kubernetes.io/component: webhook
+    app.kubernetes.io/instance: sssd-security-hook
+    app.kubernetes.io/name: webhook
+  type: ClusterIP
+  ports:
+  - name: https
+    port: 443
+    protocol: TCP
+    targetPort: 443
